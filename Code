@@ -1,0 +1,118 @@
+# Install necessary dependencies
+!pip install sentence-transformers matplotlib seaborn
+
+# Import libraries
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sentence_transformers import SentenceTransformer
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics.pairwise import cosine_similarity
+
+# === STEP 1: Load Data ===
+# Set the file path (Modify this to your uploaded CSV file)
+file_path = "ENTER FILE PATH"  # Change this to your actual file name
+df = pd.read_csv(file_path)
+
+# === STEP 2: Normalize Performance Metrics ===
+performance_columns = [
+    "Average percentage viewed (%)",
+    "Views",
+    "Watch time (hours)",
+    "Average view duration",
+    "Subscribers"
+]
+
+# Convert "Average view duration" from hh:mm:ss or mm:ss to seconds
+def duration_to_seconds(duration):
+    try:
+        parts = str(duration).split(":")
+        if len(parts) == 3:  # hh:mm:ss
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        elif len(parts) == 2:  # mm:ss
+            return int(parts[0]) * 60 + int(parts[1])
+        else:
+            return float(duration)  # Already numeric
+    except:
+        return None  # Handle errors gracefully
+
+df["Average view duration"] = df["Average view duration"].astype(str).apply(duration_to_seconds)
+
+# Normalize metrics using MinMaxScaler
+scaler = MinMaxScaler()
+df[performance_columns] = scaler.fit_transform(df[performance_columns])
+
+# Compute an overall performance score (weighted)
+df["Performance Score"] = (
+    df["Average percentage viewed (%)"] * 0.3 +
+    df["Views"] * 0.2 +
+    df["Watch time (hours)"] * 0.2 +
+    df["Average view duration"] * 0.2 +
+    df["Subscribers"] * 0.1
+)
+
+# Sort videos by performance (lowest first)
+df_sorted = df.sort_values(by="Performance Score", ascending=True)
+
+# === STEP 3: Compute Similar Titles ===
+# Load Sentence Transformer model for embeddings
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# Generate embeddings for video titles
+df["Title Embedding"] = df["Video title"].apply(lambda x: model.encode(str(x)))
+
+# Convert embeddings to a NumPy array
+embeddings = np.vstack(df["Title Embedding"].values)
+
+# Compute cosine similarity between all video titles
+similarity_matrix = cosine_similarity(embeddings)
+
+# Convert to DataFrame for easier analysis
+similarity_df = pd.DataFrame(similarity_matrix, index=df["Video title"], columns=df["Video title"])
+
+# === STEP 4: Generate & Save the Similarity Heatmap ===
+plt.figure(figsize=(12, 10))
+sns.heatmap(similarity_df, cmap="coolwarm", annot=False)
+plt.title("Video Title Similarity Matrix")
+plt.show()
+
+# === STEP 5: Identify Similar Titles & Save CSV ===
+low_performers = df_sorted.head(10).copy()  # Select the lowest-performing videos
+
+# Initialize a list to store similar titles
+similar_titles = []
+
+# Loop through each low-performing title
+for index, row in low_performers.iterrows():
+    title = row["Video title"]
+    title_embedding = model.encode(title)
+
+    # Compute similarity scores with all other titles
+    similarities = cosine_similarity([title_embedding], embeddings)[0]
+
+    # Get the most similar title (excluding itself)
+    sorted_indices = np.argsort(similarities)[::-1]
+
+    found_match = False
+    for i in sorted_indices:
+        if i != index:  # Skip itself
+            similar_title = df.iloc[i]["Video title"]
+            similar_titles.append(similar_title)
+            found_match = True
+            break
+
+    # If no match is found, mark it
+    if not found_match:
+        similar_titles.append("No Similar Title Found")
+
+# Add similar titles to the DataFrame
+low_performers["Similar Title"] = similar_titles
+
+# Save to CSV for reference
+low_performers.to_csv("low_performing_titles_with_similar.csv", index=False)
+print("CSV file saved: low_performing_titles_with_similar.csv")
+
+# Display the table in Colab
+from IPython.display import display
+display(low_performers)
